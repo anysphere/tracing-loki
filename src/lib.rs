@@ -140,6 +140,7 @@ impl fmt::Display for ErrorInner {
 /// The the crate's root documentation for an example.
 pub fn layer(
     loki_url: Url,
+    basic_auth: Option<String>, 
     mut labels: HashMap<String, String>,
     extra_fields: HashMap<String, String>,
 ) -> Result<(Layer, BackgroundTask), Error> {
@@ -149,7 +150,7 @@ pub fn layer(
             sender,
             extra_fields,
         },
-        BackgroundTask::new(loki_url, receiver, &mut labels)?,
+        BackgroundTask::new(loki_url, basic_auth, receiver, &mut labels)?,
     ))
 }
 
@@ -368,6 +369,7 @@ impl error::Error for BadRedirect {}
 /// The the crate's root documentation for an example.
 pub struct BackgroundTask {
     loki_url: Url,
+    basic_auth: Option<String>,
     receiver: ReceiverStream<LokiEvent>,
     queues: LevelMap<SendQueue>,
     buffer: Buffer,
@@ -381,6 +383,7 @@ pub struct BackgroundTask {
 impl BackgroundTask {
     fn new(
         loki_url: Url,
+        basic_auth: Option<String>,
         receiver: mpsc::Receiver<LokiEvent>,
         labels: &mut HashMap<String, String>,
     ) -> Result<BackgroundTask, Error> {
@@ -399,6 +402,7 @@ impl BackgroundTask {
         }
         Ok(BackgroundTask {
             receiver: ReceiverStream::new(receiver),
+            basic_auth,
             loki_url: loki_url
                 .join("/loki/api/v1/push")
                 .map_err(|_| Error(ErrorI::InvalidLokiUrl))?,
@@ -525,7 +529,15 @@ impl Future for BackgroundTask {
                     .buffer
                     .encode(&loki::PushRequest { streams })
                     .to_owned();
-                let request_builder = self.http_client.post(self.loki_url.clone());
+
+                let request_builder = match &self.basic_auth {
+                    Some(pass) => self
+                        .http_client
+                        .post(self.loki_url.clone())
+                        .bearer_auth(pass),
+                    None => self.http_client.post(self.loki_url.clone()),
+                };
+                    
                 self.send_task = Some(Box::pin(
                     async move {
                         request_builder
